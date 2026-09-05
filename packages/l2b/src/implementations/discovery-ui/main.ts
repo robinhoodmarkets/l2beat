@@ -102,7 +102,29 @@ const diffHistoryQuerySchema = z.object({
 export function runDiscoveryUi({ readonly }: { readonly: boolean }) {
   dotenv()
   const app = express()
-  const port = process.env.PORT ?? 2021
+  // Number() is required by the host binding added at the bottom of this
+  // function, not cosmetic. process.env.PORT is a string when set, so this
+  // expression is `string | number`, and @types/express-serve-static-core@5.0.1
+  // declares (index.d.ts:1241-1246):
+  //
+  //   listen(port: number, hostname: string, backlog: number, cb?): Server
+  //   listen(port: number, hostname: string, cb?): Server
+  //   listen(port: number, cb?): Server
+  //   listen(cb?): Server
+  //   listen(path: string, cb?): Server
+  //   listen(handle: any, listeningListener?): Server
+  //
+  // The previous two-argument `app.listen(port, cb)` call typechecked only
+  // because `string | number` fell through to the last overload, where the first
+  // parameter is `any`. There is no such escape hatch in the three-argument
+  // form, so passing the union straight through fails with TS2769.
+  //
+  // Coercing here rather than at the call site keeps the log line below and the
+  // bind in agreement. A numeric PORT behaves exactly as before; a non-numeric
+  // one becomes NaN, which node rejects with ERR_SOCKET_BAD_PORT instead of
+  // being reinterpreted as a pipe path by the `listen(path: string, cb?)`
+  // overload.
+  const port = Number(process.env.PORT ?? 2021)
 
   const STATIC_ROOT = join(__dirname, '../../../../protocolbeat/build')
 
@@ -385,7 +407,29 @@ export function runDiscoveryUi({ readonly }: { readonly: boolean }) {
     res.sendFile(join(STATIC_ROOT, 'index.html'))
   })
 
-  const server = app.listen(port, () => {
+  // Bound to loopback, not 0.0.0.0.
+  //
+  // `app.listen(port)` with no host makes Node listen on every interface, so this
+  // service was reachable from the whole local network while the log line below
+  // said "localhost". When started without --readonly it mounts, with no
+  // authentication, CORS check or origin check anywhere in this file:
+  //   - /api/terminal/discover, /api/terminal/match-flat,
+  //     /api/terminal/download-all-shapes and /api/terminal/find-minters, which all
+  //     go through executeTerminalCommand -> spawn(cmd, { shell: true, env:
+  //     { ...process.env } }) and stream the process's stdout and stderr back to the
+  //     caller over SSE. download-all-shapes takes no parameters at all.
+  //   - attachConfigRouter's write routes, which edit files in the checkout.
+  //
+  // The interpolated parameters themselves are constrained -- `project` goes through
+  // safeStringSchema (/^[a-zA-Z0-9_-]+$/) and addresses through
+  // ChainSpecificAddress -- so this is not shell injection. It does not need to be:
+  // the endpoints do useful damage with entirely well-formed arguments.
+  //
+  // HOST is honoured so anyone who was deliberately reaching the UI from another
+  // machine can restore that explicitly with HOST=0.0.0.0.
+  const host = process.env.HOST ?? '127.0.0.1'
+
+  const server = app.listen(port, host, () => {
     console.log(`Discovery UI live on http://localhost:${port}/ui`)
   })
 

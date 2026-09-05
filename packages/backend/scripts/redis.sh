@@ -24,7 +24,12 @@ need() {
 }
 
 ensure_dirs() {
-  mkdir -p "$DATA_DIR"
+  # TLS_DIR was missing here. It normally exists because the pregenerated certs are
+  # committed (see the note above init), so the omission only surfaces with a custom
+  # ROOT or after deleting .redis -- and then it surfaces badly: every openssl call
+  # in ensure_certs redirects stderr to /dev/null, so the script dies under `set -e`
+  # without printing why.
+  mkdir -p "$DATA_DIR" "$TLS_DIR"
 }
 
 # Generate a local CA and a server cert
@@ -41,7 +46,11 @@ ensure_certs() {
   openssl x509 -req -in "$TLS_DIR/server.csr" -CA "$TLS_DIR/ca.crt" -CAkey "$TLS_DIR/ca.key" -CAcreateserial \
     -out "$TLS_DIR/server.crt" -days 3650 -sha256 -extensions v3_req -extfile "$TLS_DIR/server.cnf" >/dev/null 2>&1
 
-  chmod 600 "$TLS_DIR/*"
+  # The glob has to sit outside the quotes. `"$TLS_DIR/*"` is a literal path that no
+  # file has, so chmod exited 1 -- and with `set -eo pipefail` on line 2 that aborted
+  # ensure_certs, so `redis.sh init` failed after having already written the certs
+  # and left the private keys at the default 0644 instead of 0600.
+  chmod 600 "$TLS_DIR"/*
 }
 
 # Init needs to be called only if certificates need to be regenerated
